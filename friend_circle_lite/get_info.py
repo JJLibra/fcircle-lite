@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, urlunparse, urljoin
 import ipaddress
 import socket
+import os
+import json
 
 # 设置日志配置
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,7 +18,29 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 }
 
-timeout = (10, 15) # 连接超时和读取超时，防止requests接受时间过长
+timeout = (10, 15)  # 连接超时和读取超时，防止requests接受时间过长
+
+# Feed URL 缓存
+feed_url_cache = {}
+
+def load_feed_url_cache(cache_file='feed_url_cache.json'):
+    global feed_url_cache
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                feed_url_cache = json.load(f)
+        except Exception as e:
+            logging.error(f"加载 feed URL 缓存失败: {e}")
+            feed_url_cache = {}
+    else:
+        feed_url_cache = {}
+
+def save_feed_url_cache(cache_file='feed_url_cache.json'):
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(feed_url_cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"保存 feed URL 缓存失败: {e}")
 
 def format_published_time(time_str):
     """
@@ -45,6 +69,8 @@ def format_published_time(time_str):
 def check_feed(blog_url, session):
     """
     检查博客的 RSS 或 Atom 订阅链接。
+    
+    首先检查缓存，如果存在则直接使用。
 
     此函数接受一个博客地址，尝试在其后拼接 '/atom.xml', '/rss2.xml' 和 '/feed'，并检查这些链接是否可访问。
     Atom 优先，如果都不能访问，则返回 ['none', 源地址]。
@@ -59,6 +85,22 @@ def check_feed(blog_url, session):
             如果 feed 链接可访问，则返回 ['feed', feed_url]；
             如果都不可访问，则返回 ['none', blog_url]。
     """
+
+    blog_url = blog_url.rstrip('/')
+
+    # 首先检查缓存
+    if blog_url in feed_url_cache:
+        feed_url = feed_url_cache[blog_url]
+        try:
+            response = session.get(feed_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                logging.info(f"使用缓存的 {blog_url} 的 feed URL：{feed_url}")
+                return ['cached', feed_url]
+            else:
+                logging.info(f"缓存的 {blog_url} 的 feed URL 无效（状态码 {response.status_code}），重新检查...")
+        except requests.RequestException as e:
+            logging.info(f"缓存的 {blog_url} 的 feed URL 无效（异常 {e}），重新检查...")
+
     possible_feeds = [
         ('atom', '/atom.xml'),
         ('rss', '/rss.xml'), # 2024-07-26 添加 /rss.xml内容的支持
@@ -70,12 +112,15 @@ def check_feed(blog_url, session):
     ]
 
     for feed_type, path in possible_feeds:
-        feed_url = blog_url.rstrip('/') + path
+        feed_url = blog_url + path
         # 确保 feed_url 使用 https 协议
         feed_url = ensure_https(feed_url)
         try:
             response = session.get(feed_url, headers=headers, timeout=timeout)
             if response.status_code == 200:
+                # 存入缓存
+                feed_url_cache[blog_url] = feed_url
+                logging.info(f"找到 {blog_url} 的 feed：{feed_url}")
                 return [feed_type, feed_url]
         except requests.RequestException:
             continue
@@ -311,6 +356,9 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     返回：
     tuple: (处理后的数据字典, 错误的朋友信息列表)
     """
+    
+    load_feed_url_cache()
+
     session = requests.Session()
     retries = requests.packages.urllib3.util.retry.Retry(
         total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504]
@@ -333,6 +381,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     article_data = []
     error_friends_info = []
 
+    # 限制并发数量，避免对友链站点造成过大压力
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
             executor.submit(process_friend, friend, session, count, specific_RSS): friend
@@ -367,6 +416,8 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     }
 
     logging.info(f"数据处理完成，总共有 {total_friends} 位朋友，其中 {active_friends} 位博客可访问，{error_friends} 位博客无法访问")
+
+    save_feed_url_cache()
 
     return result, error_friends_info
 
