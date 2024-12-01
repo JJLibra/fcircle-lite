@@ -53,7 +53,6 @@ def format_published_time(time_str):
     return shanghai_time.strftime('%Y-%m-%d %H:%M')
 
 
-
 def check_feed(blog_url, session):
     """
     检查博客的 RSS 或 Atom 订阅链接。
@@ -82,8 +81,10 @@ def check_feed(blog_url, session):
         ('index', '/index.xml') # 2024-07-25 添加 /index.xml内容的支持
     ]
 
+    blog_url = blog_url.rstrip('/')
+
     for feed_type, path in possible_feeds:
-        feed_url = blog_url.rstrip('/') + path
+        feed_url = f"{blog_url}{path}"
         try:
             response = session.get(feed_url, headers=headers, timeout=timeout)
             if response.status_code == 200:
