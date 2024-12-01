@@ -333,6 +333,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     total_articles = 0
     article_data = []
     error_friends_info = []
+    no_subscription_friends = []
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
@@ -351,10 +352,12 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
                 else:
                     error_friends += 1
                     error_friends_info.append(friend)
+                    no_subscription_friends.append(friend)
             except Exception as e:
                 logging.error(f"处理 {friend} 时发生错误: {e}", exc_info=True)
                 error_friends += 1
                 error_friends_info.append(friend)
+                no_subscription_friends.append(friend)
 
     result = {
         'statistical_data': {
@@ -364,10 +367,12 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
             'article_num': total_articles,
             'last_updated_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         },
-        'article_data': article_data
+        'article_data': article_data,
+        'no_subscription_friends': no_subscription_friends
     }
     
     logging.info(f"数据处理完成，总共有 {total_friends} 位朋友，其中 {active_friends} 位博客可访问，{error_friends} 位博客无法访问")
+    logging.info(f"无法获取的订阅友链：{', '.join([friend[0] for friend in no_subscription_friends])}")
 
     return result, error_friends_info
 
