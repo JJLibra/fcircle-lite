@@ -337,12 +337,10 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     返回：
     dict: 包含统计数据和文章信息的字典。
     """
-    response = curl_request(json_url)
-    if not response:
-        logging.error(f"无法获取链接：{json_url}")
-        return None
+    session = requests.Session()
 
     try:
+        response = session.get(json_url, headers=headers, timeout=timeout)
         friends_data = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
@@ -358,7 +356,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
-            executor.submit(process_friend, friend, count, specific_RSS): friend
+            executor.submit(process_friend, friend, session, count, specific_RSS): friend
             for friend in friends_data['friends']
         }
         
