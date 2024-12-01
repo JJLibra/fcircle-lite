@@ -2,7 +2,7 @@ import subprocess
 
 curl_command = [
     "curl", "-v", "-A", "Mozilla/5.0 (Windows; U; Windows NT 6.1; en-us) AppleWebKit/534.50 (KHTML, like Gecko) Version/5.1 Safari/534.50", 
-    "https://blog.byer.top/atom.xml"
+    "https://qcqx.cn/atom.xml"
 ]
 
 try:

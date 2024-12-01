@@ -36,8 +36,8 @@ jobs:
 
     - name: Test network connection to blog.byer.top
       run: |
-        echo "Testing network connection to https://blog.byer.top/atom.xml"
-        curl -v -A "Mozilla/5.0 (Windows; U; Windows NT 6.1; en-us) AppleWebKit/534.50 (KHTML, like Gecko) Version/5.1 Safari/534.50" https://blog.byer.top/atom.xml
+        echo "Testing network connection to https://qcqx.cn/atom.xml"
+        curl -v -A "Mozilla/5.0 (Windows; U; Windows NT 6.1; en-us) AppleWebKit/534.50 (KHTML, like Gecko) Version/5.1 Safari/534.50" https://qcqx.cn/atom.xml
     
     - name: Test script connection to blog.byer.top
       run: |
