@@ -60,7 +60,7 @@ smtp:
 #   name:               友链名称
 #   url:                指定的RSS地址
 specific_RSS:
-  - name: "星の野"
-    url: "https://blog.byer.top/atom.xml"
-  - name: "陶小桃Blog"
-    url: "https://www.52txr.cn/feed/"
+  # - name: "星の野"
+  #   url: "https://blog.byer.top/atom.xml"
+  # - name: "陶小桃Blog"
+  #   url: "https://www.52txr.cn/feed/"

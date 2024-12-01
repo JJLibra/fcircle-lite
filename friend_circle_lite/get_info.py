@@ -203,11 +203,9 @@ def parse_feed(url, session, count=5, blog_url=None):
     dict: 包含网站名称、作者、原链接和每篇文章详细内容的字典。
     """
     try:
-        scraper = cloudscraper.create_scraper()  # 创建一个cloudscraper对象
+        scraper = cloudscraper.create_scraper()  # cloudscraper：cloudflare反爬
         response = scraper.get(url, headers=headers, timeout=timeout)
         response.encoding = 'utf-8'
-        if url == 'https://blog.byer.top/atom.xml':
-            logging.info(response.text)
         feed = feedparser.parse(response.text, sanitize_html=True)
         
         if feed.bozo:
