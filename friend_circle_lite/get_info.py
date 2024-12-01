@@ -185,6 +185,8 @@ def replace_non_domain(link, blog_url):
 
     return link
 
+import cloudscraper
+
 def parse_feed(url, session, count=5, blog_url=None):
     """
     解析 Atom 或 RSS2 feed 并返回包含网站名称、作者、原链接和每篇文章详细内容的字典。
@@ -201,7 +203,8 @@ def parse_feed(url, session, count=5, blog_url=None):
     dict: 包含网站名称、作者、原链接和每篇文章详细内容的字典。
     """
     try:
-        response = session.get(url, headers=headers, timeout=timeout)
+        scraper = cloudscraper.create_scraper()  # 创建一个cloudscraper对象
+        response = scraper.get(url, headers=headers, timeout=timeout)
         response.encoding = 'utf-8'
         if url == 'https://blog.byer.top/atom.xml':
             logging.info(response.text)
