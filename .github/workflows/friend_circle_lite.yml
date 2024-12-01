@@ -34,10 +34,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Test network connection to target URL
+    - name: Test network connection to blog.byer.top
       run: |
         echo "Testing network connection to https://blog.byer.top/atom.xml"
-        curl -v https://blog.byer.top/atom.xml || wget --server-response https://blog.byer.top/atom.xml
+        curl -v -A "Mozilla/5.0" https://blog.byer.top/atom.xml
 
     - name: Download last_articles.json artifact
       uses: dawidd6/action-download-artifact@v6
