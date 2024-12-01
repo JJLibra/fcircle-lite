@@ -203,6 +203,8 @@ def parse_feed(url, session, count=5, blog_url=None):
     try:
         response = session.get(url, headers=headers, timeout=timeout)
         response.encoding = 'utf-8'
+        if url == 'https://blog.byer.top/atom.xml':
+            logging.info(response.text)
         feed = feedparser.parse(response.text, sanitize_html=True)
         
         if feed.bozo:
