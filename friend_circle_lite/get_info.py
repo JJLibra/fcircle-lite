@@ -94,7 +94,98 @@ def check_feed(blog_url, session):
     return ['none', blog_url]
 
 
-def parse_feed(url, session, count=5, blog_url=''):
+def is_bad_link(link):
+    """
+    判断链接是否是IP地址+端口、localhost+端口或缺少域名的链接
+
+    参数：
+    link (str): 要检查的链接
+
+    返回：
+    bool: 如果是IP地址+端口、localhost+端口或缺少域名，返回True；否则返回False
+    """
+    if '://' not in link:
+        link = 'http://' + link
+
+    protocol_end = link.find('://')
+    link = link[protocol_end + 3:]  # 去掉协议部分
+
+    if ':' in link:
+        host, port = link.split(':', 1)
+    else:
+        host = link
+        port = None
+
+    if host in ['localhost', '::1', '127.0.0.1']:
+        return True
+
+    ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    if re.match(ipv4_pattern, host):
+        octets = host.split('.')
+        if all(0 <= int(octet) <= 255 for octet in octets):
+            return True
+
+    # 检查IPv6地址（不完善）
+    if host.startswith('[') and host.endswith(']'):
+        return True
+
+    if not host:
+        return True
+
+    return False
+
+def ensure_https(url):
+    """
+    确保链接使用 https 协议
+
+    参数：
+    url (str): 原始链接
+
+    返回：
+    str: 使用 https 协议的链接
+    """
+    if url.startswith('http://'):
+        return 'https://' + url[7:]
+    elif url.startswith('https://'):
+        return url
+    else:
+        return 'https://' + url
+
+def replace_non_domain(link, blog_url):
+    """
+    修复链接，将IP地址、localhost或缺少域名的链接替换为blog_url的域名，并确保使用HTTPS
+
+    参数：
+    link (str): 原始链接
+    blog_url (str): 博客的URL
+
+    返回：
+    str: 修复后的链接
+    """
+    if not link or not blog_url:
+        return link
+
+    protocol_end = blog_url.find('://')
+    blog_domain = blog_url[protocol_end + 3:] if protocol_end != -1 else blog_url
+    blog_domain = blog_domain.split('/')[0]
+
+    if '://' not in link:
+        link = 'http://' + link
+    protocol_end = link.find('://')
+    link_domain = link[protocol_end + 3:] if protocol_end != -1 else link
+    link_domain = link_domain.split('/')[0]
+
+    # http -> https
+    if link.startswith('http://'):
+        link = 'https://' + link[7:]
+
+    if is_bad_link(link):
+        link = link.replace(link_domain, blog_domain)
+        link = 'https://' + link.split('://')[1]  # https
+
+    return link
+
+def parse_feed(url, session, count=5, blog_url=None):
     """
     解析 Atom 或 RSS2 feed 并返回包含网站名称、作者、原链接和每篇文章详细内容的字典。
 
@@ -132,10 +223,8 @@ def parse_feed(url, session, count=5, blog_url=''):
             else:
                 published = ''
                 logging.warning(f"文章 {entry.title} 未包含任何时间信息, 请检查原文, 设置为默认时间")
-            
-            # 处理链接中可能存在的错误，比如ip或localhost
-            article_link = replace_non_domain(entry.link, blog_url) if 'link' in entry else ''
-            
+            entry_link = entry.link if 'link' in entry else ''
+            article_link = replace_non_domain(entry_link, blog_url)
             article = {
                 'title': entry.title if 'title' in entry else '',
                 'author': result['author'],
@@ -160,23 +249,6 @@ def parse_feed(url, session, count=5, blog_url=''):
             'link': '',
             'articles': []
         }
-
-def replace_non_domain(link: str, blog_url: str) -> str:
-    """
-    暂未实现
-    检测并替换字符串中的非正常域名部分（如 IP 地址或 localhost），替换为 blog_url。
-    替换后强制使用 https，且考虑 blog_url 尾部是否有斜杠。
-
-    :param link: 原始地址字符串
-    :param blog_url: 替换为的博客地址
-    :return: 替换后的地址字符串
-    """
-    
-    # 提取link中的路径部分，无需协议和域名
-    # path = re.sub(r'^https?://[^/]+', '', link)
-    # print(path)
-    
-    return link
 
 def process_friend(friend, session, count, specific_RSS=[]):
     """
@@ -349,8 +421,6 @@ def marge_data_from_json_url(data, marge_json_url):
         data['article_data'] = list({v['link']:v for v in data['article_data']}.values())
         logging.info(f"合并数据完成，现在共有 {len(data['article_data'])} 篇文章")
     return data
-
-import requests
 
 def marge_errors_from_json_url(errors, marge_json_url):
     """
