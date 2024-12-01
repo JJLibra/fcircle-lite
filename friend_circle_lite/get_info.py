@@ -205,6 +205,15 @@ def parse_feed(url, session, count=5, blog_url=None):
         response.encoding = 'utf-8'
         feed = feedparser.parse(response.text)
         
+        if feed.bozo:
+            logging.error(f"解析 RSS 源时出现错误：{feed.bozo_exception}")
+            return {
+                'website_name': '',
+                'author': '',
+                'link': '',
+                'articles': []
+            }
+
         result = {
             'website_name': feed.feed.title if 'title' in feed.feed else '',
             'author': feed.feed.author if 'author' in feed.feed else '',
@@ -212,8 +221,7 @@ def parse_feed(url, session, count=5, blog_url=None):
             'articles': []
         }
         
-        for _ , entry in enumerate(feed.entries):
-            
+        for entry in feed.entries:
             if 'published' in entry:
                 published = format_published_time(entry.published)
             elif 'updated' in entry:
@@ -235,8 +243,7 @@ def parse_feed(url, session, count=5, blog_url=None):
             }
             result['articles'].append(article)
         
-        # 对文章按时间排序，并只取前 count 篇文章
-        result['articles'] = sorted(result['articles'], key=lambda x: datetime.strptime(x['published'], '%Y-%m-%d %H:%M'), reverse=True)
+        result['articles'] = sorted(result['articles'], key=lambda x: datetime.strptime(x['published'], '%Y-%m-%d %H:%M') if x['published'] else datetime.min, reverse=True)
         if count < len(result['articles']):
             result['articles'] = result['articles'][:count]
         
