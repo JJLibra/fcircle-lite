@@ -25,21 +25,24 @@ def curl_request(url, headers=None, timeout=(10,15)):
             for key, value in headers.items():
                 header_list.extend(['-H', f'{key}: {value}'])
         # 设置超时时间
-        curl_cmd = ['curl', '-s', '-D', '-', '--connect-timeout', str(timeout[0]), '--max-time', str(timeout[1]), *header_list, url]
+        curl_cmd = [
+            'curl', '-s', '--connect-timeout', str(timeout[0]), '--max-time', str(timeout[1]),
+            '-w', '%{http_code}',  # 输出状态码
+            *header_list, url
+        ]
         result = subprocess.run(curl_cmd, capture_output=True, text=True)
         response = result.stdout
 
-        # 分割响应头和响应体
-        header_part, _, body_part = response.partition('\r\n\r\n')
+        # 提取状态码（最后3位是状态码）
+        http_code = response[-3:]
+        response_body = response[:-3]
 
-        # 从响应头中提取状态码
-        status_line = header_part.splitlines()[0]
         try:
-            status_code = int(status_line.split()[1])
-        except:
+            status_code = int(http_code)
+        except ValueError:
             status_code = -1  # 无法获取状态码
 
-        return body_part, status_code
+        return response_body, status_code
     except Exception as e:
         logging.error(f"请求 {url} 时发生错误: {e}")
         return '', -1
