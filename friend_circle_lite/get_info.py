@@ -27,19 +27,21 @@ def curl_request(url, headers=None, timeout=(10,15)):
         # 设置超时时间
         curl_cmd = [
             'curl', '-s', '--connect-timeout', str(timeout[0]), '--max-time', str(timeout[1]),
-            '-w', '%{http_code}',  # 输出状态码
+            '-w', '\nHTTP_STATUS_CODE:%{http_code}',  # 输出状态码，带有分隔符
             *header_list, url
         ]
         result = subprocess.run(curl_cmd, capture_output=True, text=True)
-        response = result.stdout
+        full_output = result.stdout
 
-        # 提取状态码（最后3位是状态码）
-        http_code = response[-3:]
-        response_body = response[:-3]
-
-        try:
-            status_code = int(http_code)
-        except ValueError:
+        # 按照分隔符拆分响应体和状态码
+        if '\nHTTP_STATUS_CODE:' in full_output:
+            response_body, status_line = full_output.split('\nHTTP_STATUS_CODE:')
+            try:
+                status_code = int(status_line.strip())
+            except ValueError:
+                status_code = -1  # 无法获取状态码
+        else:
+            response_body = full_output
             status_code = -1  # 无法获取状态码
 
         return response_body, status_code
@@ -239,9 +241,8 @@ def parse_feed(url, count=5, blog_url=None):
             'link': feed.feed.link if 'link' in feed.feed else '',
             'articles': []
         }
-        
-        for _ , entry in enumerate(feed.entries):
-            
+
+        for entry in feed.entries:
             if 'published' in entry:
                 published = format_published_time(entry.published)
             elif 'updated' in entry:
@@ -264,7 +265,7 @@ def parse_feed(url, count=5, blog_url=None):
             result['articles'].append(article)
         
         # 对文章按时间排序，并只取前 count 篇文章
-        result['articles'] = sorted(result['articles'], key=lambda x: datetime.strptime(x['published'], '%Y-%m-%d %H:%M'), reverse=True)
+        result['articles'] = sorted(result['articles'], key=lambda x: datetime.strptime(x['published'], '%Y-%m-%d %H:%M') if x['published'] else datetime.min, reverse=True)
         if count < len(result['articles']):
             result['articles'] = result['articles'][:count]
         
@@ -347,6 +348,9 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     """
     try:
         response_text, status_code = curl_request(json_url, headers=headers, timeout=timeout)
+        if status_code != 200:
+            logging.error(f"无法获取链接：{json_url} ，HTTP状态码：{status_code}")
+            return None
         friends_data = json.loads(response_text)
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
@@ -413,7 +417,7 @@ def sort_articles_by_time(data):
     """
     # 先确保每个元素存在时间
     for article in data['article_data']:
-        if article['created'] == '' or article['created'] == None:
+        if not article.get('created'):
             article['created'] = '2024-01-01 00:00'
             # 输出警告信息
             logging.warning(f"文章 {article['title']} 未包含时间信息，已设置为默认时间 2024-01-01 00:00")
@@ -421,7 +425,7 @@ def sort_articles_by_time(data):
     if 'article_data' in data:
         sorted_articles = sorted(
             data['article_data'],
-            key=lambda x: datetime.strptime(x['created'], '%Y-%m-%d %H:%M'),
+            key=lambda x: datetime.strptime(x['created'], '%Y-%m-%d %H:%M') if x['created'] else datetime.min,
             reverse=True
         )
         data['article_data'] = sorted_articles
@@ -440,6 +444,9 @@ def marge_data_from_json_url(data, marge_json_url):
     """
     try:
         response_text, status_code = curl_request(marge_json_url, headers=headers, timeout=timeout)
+        if status_code != 200:
+            logging.error(f"无法获取链接：{marge_json_url} ，HTTP状态码：{status_code}")
+            return data
         marge_data = json.loads(response_text)
     except Exception as e:
         logging.error(f"无法获取链接：{marge_json_url}，出现的问题为：{e}", exc_info=True)
@@ -466,6 +473,9 @@ def marge_errors_from_json_url(errors, marge_json_url):
     """
     try:
         response_text, status_code = curl_request(marge_json_url, timeout=(10,10))
+        if status_code != 200:
+            logging.error(f"无法获取链接：{marge_json_url} ，HTTP状态码：{status_code}")
+            return errors
         marge_errors = json.loads(response_text)
     except Exception as e:
         logging.error(f"无法获取链接：{marge_json_url}，出现的问题为：{e}", exc_info=True)
