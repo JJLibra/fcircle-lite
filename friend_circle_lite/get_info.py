@@ -5,8 +5,6 @@ import requests
 import re
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import subprocess
-import json
 
 # 标准化的请求头
 headers = {
@@ -14,40 +12,6 @@ headers = {
 }
 
 timeout = (10, 15) # 连接超时和读取超时，防止requests接受时间过长
-
-def curl_request(url, headers=None, timeout=(10,15)):
-    """
-    使用curl命令发送GET请求
-    """
-    try:
-        header_list = []
-        if headers:
-            for key, value in headers.items():
-                header_list.extend(['-H', f'{key}: {value}'])
-        # 设置超时时间
-        curl_cmd = [
-            'curl', '-s', '--connect-timeout', str(timeout[0]), '--max-time', str(timeout[1]),
-            '-w', '\nHTTP_STATUS_CODE:%{http_code}',  # 输出状态码，带有分隔符
-            *header_list, url
-        ]
-        result = subprocess.run(curl_cmd, capture_output=True, text=True)
-        full_output = result.stdout
-
-        # 按照分隔符拆分响应体和状态码
-        if '\nHTTP_STATUS_CODE:' in full_output:
-            response_body, status_line = full_output.split('\nHTTP_STATUS_CODE:')
-            try:
-                status_code = int(status_line.strip())
-            except ValueError:
-                status_code = -1  # 无法获取状态码
-        else:
-            response_body = full_output
-            status_code = -1  # 无法获取状态码
-
-        return response_body, status_code
-    except Exception as e:
-        logging.error(f"请求 {url} 时发生错误: {e}")
-        return '', -1
 
 def format_published_time(time_str):
     """
@@ -88,7 +52,9 @@ def format_published_time(time_str):
     shanghai_time = parsed_time.astimezone(timezone(timedelta(hours=8)))
     return shanghai_time.strftime('%Y-%m-%d %H:%M')
 
-def check_feed(blog_url):
+
+
+def check_feed(blog_url, session):
     """
     检查博客的 RSS 或 Atom 订阅链接。
 
@@ -97,6 +63,7 @@ def check_feed(blog_url):
 
     参数：
     blog_url (str): 博客的基础 URL。
+    session (requests.Session): 用于请求的会话对象。
 
     返回：
     list: 包含类型和拼接后的链接的列表。如果 atom 链接可访问，则返回 ['atom', atom_url]；
@@ -115,13 +82,14 @@ def check_feed(blog_url):
         ('index', '/index.xml') # 2024-07-25 添加 /index.xml内容的支持
     ]
 
-    blog_url = blog_url.rstrip('/')
-
     for feed_type, path in possible_feeds:
-        feed_url = f"{blog_url}{path}"
-        response_text, status_code = curl_request(feed_url, headers=headers, timeout=timeout)
-        if status_code == 200:
-            return [feed_type, feed_url]
+        feed_url = blog_url.rstrip('/') + path
+        try:
+            response = session.get(feed_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                return [feed_type, feed_url]
+        except requests.RequestException:
+            continue
     logging.warning(f"无法找到 {blog_url} 的订阅链接")
     return ['none', blog_url]
 
@@ -217,7 +185,7 @@ def replace_non_domain(link, blog_url):
 
     return link
 
-def parse_feed(url, count=5, blog_url=None):
+def parse_feed(url, session, count=5, blog_url=None):
     """
     解析 Atom 或 RSS2 feed 并返回包含网站名称、作者、原链接和每篇文章详细内容的字典。
 
@@ -226,14 +194,16 @@ def parse_feed(url, count=5, blog_url=None):
 
     参数：
     url (str): Atom 或 RSS2 feed 的 URL。
+    session (requests.Session): 用于请求的会话对象。
     count (int): 获取文章数的最大数。如果小于则全部获取，如果文章数大于则只取前 count 篇文章。
 
     返回：
     dict: 包含网站名称、作者、原链接和每篇文章详细内容的字典。
     """
     try:
-        response_text, status_code = curl_request(url, headers=headers, timeout=timeout)
-        feed = feedparser.parse(response_text)
+        response = session.get(url, headers=headers, timeout=timeout)
+        response.encoding = 'utf-8'
+        feed = feedparser.parse(response.text)
         
         result = {
             'website_name': feed.feed.title if 'title' in feed.feed else '',
@@ -241,8 +211,9 @@ def parse_feed(url, count=5, blog_url=None):
             'link': feed.feed.link if 'link' in feed.feed else '',
             'articles': []
         }
-
-        for entry in feed.entries:
+        
+        for _ , entry in enumerate(feed.entries):
+            
             if 'published' in entry:
                 published = format_published_time(entry.published)
             elif 'updated' in entry:
@@ -265,7 +236,7 @@ def parse_feed(url, count=5, blog_url=None):
             result['articles'].append(article)
         
         # 对文章按时间排序，并只取前 count 篇文章
-        result['articles'] = sorted(result['articles'], key=lambda x: datetime.strptime(x['published'], '%Y-%m-%d %H:%M') if x['published'] else datetime.min, reverse=True)
+        result['articles'] = sorted(result['articles'], key=lambda x: datetime.strptime(x['published'], '%Y-%m-%d %H:%M'), reverse=True)
         if count < len(result['articles']):
             result['articles'] = result['articles'][:count]
         
@@ -279,12 +250,13 @@ def parse_feed(url, count=5, blog_url=None):
             'articles': []
         }
 
-def process_friend(friend, count, specific_RSS=[]):
+def process_friend(friend, session, count, specific_RSS=[]):
     """
     处理单个朋友的博客信息。
 
     参数：
     friend (list): 包含朋友信息的列表 [name, blog_url, avatar]。
+    session (requests.Session): 用于请求的会话对象。
     count (int): 获取每个博客的最大文章数。
     specific_RSS (list): 包含特定 RSS 源的字典列表 [{name, url}]
 
@@ -302,11 +274,11 @@ def process_friend(friend, count, specific_RSS=[]):
         feed_type = 'specific'
         logging.info(f"“{name}”的博客“ {blog_url} ”为特定RSS源“ {feed_url} ”")
     else:
-        feed_type, feed_url = check_feed(blog_url)
+        feed_type, feed_url = check_feed(blog_url, session)
         logging.info(f"“{name}”的博客“ {blog_url} ”的feed类型为“{feed_type}”, feed地址为“ {feed_url} ”")
 
     if feed_type != 'none':
-        feed_info = parse_feed(feed_url, count, blog_url)
+        feed_info = parse_feed(feed_url, session, count, blog_url)
         articles = [
             {
                 'title': article['title'],
@@ -346,12 +318,11 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     返回：
     dict: 包含统计数据和文章信息的字典。
     """
+    session = requests.Session()
+    
     try:
-        response_text, status_code = curl_request(json_url, headers=headers, timeout=timeout)
-        if status_code != 200:
-            logging.error(f"无法获取链接：{json_url} ，HTTP状态码：{status_code}")
-            return None
-        friends_data = json.loads(response_text)
+        response = session.get(json_url, headers=headers, timeout=timeout)
+        friends_data = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
         return None
@@ -362,11 +333,10 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     total_articles = 0
     article_data = []
     error_friends_info = []
-    no_subscription_friends = []
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
-            executor.submit(process_friend, friend, count, specific_RSS): friend
+            executor.submit(process_friend, friend, session, count, specific_RSS): friend
             for friend in friends_data['friends']
         }
         
@@ -381,12 +351,10 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
                 else:
                     error_friends += 1
                     error_friends_info.append(friend)
-                    no_subscription_friends.append(friend)
             except Exception as e:
                 logging.error(f"处理 {friend} 时发生错误: {e}", exc_info=True)
                 error_friends += 1
                 error_friends_info.append(friend)
-                no_subscription_friends.append(friend)
 
     result = {
         'statistical_data': {
@@ -396,12 +364,10 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
             'article_num': total_articles,
             'last_updated_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         },
-        'article_data': article_data,
-        'no_subscription_friends': no_subscription_friends
+        'article_data': article_data
     }
     
     logging.info(f"数据处理完成，总共有 {total_friends} 位朋友，其中 {active_friends} 位博客可访问，{error_friends} 位博客无法访问")
-    logging.info(f"无法获取的订阅友链：{', '.join([friend[0] for friend in no_subscription_friends])}")
 
     return result, error_friends_info
 
@@ -417,7 +383,7 @@ def sort_articles_by_time(data):
     """
     # 先确保每个元素存在时间
     for article in data['article_data']:
-        if not article.get('created'):
+        if article['created'] == '' or article['created'] == None:
             article['created'] = '2024-01-01 00:00'
             # 输出警告信息
             logging.warning(f"文章 {article['title']} 未包含时间信息，已设置为默认时间 2024-01-01 00:00")
@@ -425,7 +391,7 @@ def sort_articles_by_time(data):
     if 'article_data' in data:
         sorted_articles = sorted(
             data['article_data'],
-            key=lambda x: datetime.strptime(x['created'], '%Y-%m-%d %H:%M') if x['created'] else datetime.min,
+            key=lambda x: datetime.strptime(x['created'], '%Y-%m-%d %H:%M'),
             reverse=True
         )
         data['article_data'] = sorted_articles
@@ -443,11 +409,8 @@ def marge_data_from_json_url(data, marge_json_url):
     dict: 合并后的文章信息字典，已去重处理
     """
     try:
-        response_text, status_code = curl_request(marge_json_url, headers=headers, timeout=timeout)
-        if status_code != 200:
-            logging.error(f"无法获取链接：{marge_json_url} ，HTTP状态码：{status_code}")
-            return data
-        marge_data = json.loads(response_text)
+        response = requests.get(marge_json_url, headers=headers, timeout=timeout)
+        marge_data = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{marge_json_url}，出现的问题为：{e}", exc_info=True)
         return data
@@ -472,11 +435,8 @@ def marge_errors_from_json_url(errors, marge_json_url):
     list: 合并后的错误信息列表
     """
     try:
-        response_text, status_code = curl_request(marge_json_url, timeout=(10,10))
-        if status_code != 200:
-            logging.error(f"无法获取链接：{marge_json_url} ，HTTP状态码：{status_code}")
-            return errors
-        marge_errors = json.loads(response_text)
+        response = requests.get(marge_json_url, timeout=10)  # 设置请求超时时间
+        marge_errors = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{marge_json_url}，出现的问题为：{e}", exc_info=True)
         return errors
