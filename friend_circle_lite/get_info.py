@@ -203,7 +203,7 @@ def parse_feed(url, session, count=5, blog_url=None):
     try:
         response = session.get(url, headers=headers, timeout=timeout)
         response.encoding = 'utf-8'
-        feed = feedparser.parse(response.text)
+        feed = feedparser.parse(response.text, sanitize_html=True)
         
         if feed.bozo:
             logging.error(f"解析 RSS 源时出现错误：{feed.bozo_exception}")
