@@ -6,6 +6,7 @@ import re
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
+import json
 
 # 标准化的请求头
 headers = {
@@ -13,6 +14,35 @@ headers = {
 }
 
 timeout = (10, 15) # 连接超时和读取超时，防止requests接受时间过长
+
+def curl_request(url, headers=None, timeout=(10,15)):
+    """
+    使用curl命令发送GET请求
+    """
+    try:
+        header_list = []
+        if headers:
+            for key, value in headers.items():
+                header_list.extend(['-H', f'{key}: {value}'])
+        # 设置超时时间
+        curl_cmd = ['curl', '-s', '-D', '-', '--connect-timeout', str(timeout[0]), '--max-time', str(timeout[1]), *header_list, url]
+        result = subprocess.run(curl_cmd, capture_output=True, text=True)
+        response = result.stdout
+
+        # 分割响应头和响应体
+        header_part, _, body_part = response.partition('\r\n\r\n')
+
+        # 从响应头中提取状态码
+        status_line = header_part.splitlines()[0]
+        try:
+            status_code = int(status_line.split()[1])
+        except:
+            status_code = -1  # 无法获取状态码
+
+        return body_part, status_code
+    except Exception as e:
+        logging.error(f"请求 {url} 时发生错误: {e}")
+        return '', -1
 
 def format_published_time(time_str):
     """
@@ -53,27 +83,6 @@ def format_published_time(time_str):
     shanghai_time = parsed_time.astimezone(timezone(timedelta(hours=8)))
     return shanghai_time.strftime('%Y-%m-%d %H:%M')
 
-
-def curl_request(url):
-    """
-    使用curl代替requests进行HTTP请求
-    """
-    try:
-        result = subprocess.run(
-            ['curl', '-s', '-A', headers['User-Agent'], url],
-            capture_output=True, text=True, timeout=timeout[1]
-        )
-        if result.returncode == 0:
-            return result.stdout
-        else:
-            return None
-    except subprocess.TimeoutExpired:
-        logging.error(f"请求超时: {url}")
-        return None
-    except Exception as e:
-        logging.error(f"发生错误: {e}")
-        return None
-
 def check_feed(blog_url):
     """
     检查博客的 RSS 或 Atom 订阅链接。
@@ -83,7 +92,6 @@ def check_feed(blog_url):
 
     参数：
     blog_url (str): 博客的基础 URL。
-    session (requests.Session): 用于请求的会话对象。
 
     返回：
     list: 包含类型和拼接后的链接的列表。如果 atom 链接可访问，则返回 ['atom', atom_url]；
@@ -106,8 +114,8 @@ def check_feed(blog_url):
 
     for feed_type, path in possible_feeds:
         feed_url = f"{blog_url}{path}"
-        response = curl_request(feed_url)
-        if response:
+        response_text, status_code = curl_request(feed_url, headers=headers, timeout=timeout)
+        if status_code == 200:
             return [feed_type, feed_url]
     logging.warning(f"无法找到 {blog_url} 的订阅链接")
     return ['none', blog_url]
@@ -213,18 +221,15 @@ def parse_feed(url, count=5, blog_url=None):
 
     参数：
     url (str): Atom 或 RSS2 feed 的 URL。
-    session (requests.Session): 用于请求的会话对象。
     count (int): 获取文章数的最大数。如果小于则全部获取，如果文章数大于则只取前 count 篇文章。
 
     返回：
     dict: 包含网站名称、作者、原链接和每篇文章详细内容的字典。
     """
     try:
-        response = curl_request(url)
-        if response:
-            response.encoding = 'utf-8'
-            feed = feedparser.parse(response)
-
+        response_text, status_code = curl_request(url, headers=headers, timeout=timeout)
+        feed = feedparser.parse(response_text)
+        
         result = {
             'website_name': feed.feed.title if 'title' in feed.feed else '',
             'author': feed.feed.author if 'author' in feed.feed else '',
@@ -233,6 +238,7 @@ def parse_feed(url, count=5, blog_url=None):
         }
         
         for _ , entry in enumerate(feed.entries):
+            
             if 'published' in entry:
                 published = format_published_time(entry.published)
             elif 'updated' in entry:
@@ -275,7 +281,6 @@ def process_friend(friend, count, specific_RSS=[]):
 
     参数：
     friend (list): 包含朋友信息的列表 [name, blog_url, avatar]。
-    session (requests.Session): 用于请求的会话对象。
     count (int): 获取每个博客的最大文章数。
     specific_RSS (list): 包含特定 RSS 源的字典列表 [{name, url}]
 
@@ -337,11 +342,9 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     返回：
     dict: 包含统计数据和文章信息的字典。
     """
-    session = requests.Session()
-
     try:
-        response = session.get(json_url, headers=headers, timeout=timeout)
-        friends_data = response.json()
+        response_text, status_code = curl_request(json_url, headers=headers, timeout=timeout)
+        friends_data = json.loads(response_text)
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
         return None
@@ -356,7 +359,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
-            executor.submit(process_friend, friend, session, count, specific_RSS): friend
+            executor.submit(process_friend, friend, count, specific_RSS): friend
             for friend in friends_data['friends']
         }
         
@@ -433,8 +436,8 @@ def marge_data_from_json_url(data, marge_json_url):
     dict: 合并后的文章信息字典，已去重处理
     """
     try:
-        response = requests.get(marge_json_url, headers=headers, timeout=timeout)
-        marge_data = response.json()
+        response_text, status_code = curl_request(marge_json_url, headers=headers, timeout=timeout)
+        marge_data = json.loads(response_text)
     except Exception as e:
         logging.error(f"无法获取链接：{marge_json_url}，出现的问题为：{e}", exc_info=True)
         return data
@@ -459,8 +462,8 @@ def marge_errors_from_json_url(errors, marge_json_url):
     list: 合并后的错误信息列表
     """
     try:
-        response = requests.get(marge_json_url, timeout=10)  # 设置请求超时时间
-        marge_errors = response.json()
+        response_text, status_code = curl_request(marge_json_url, timeout=(10,10))
+        marge_errors = json.loads(response_text)
     except Exception as e:
         logging.error(f"无法获取链接：{marge_json_url}，出现的问题为：{e}", exc_info=True)
         return errors
