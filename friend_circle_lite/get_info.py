@@ -5,6 +5,7 @@ import requests
 import re
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import subprocess
 
 # 标准化的请求头
 headers = {
@@ -53,7 +54,27 @@ def format_published_time(time_str):
     return shanghai_time.strftime('%Y-%m-%d %H:%M')
 
 
-def check_feed(blog_url, session):
+def curl_request(url):
+    """
+    使用curl代替requests进行HTTP请求
+    """
+    try:
+        result = subprocess.run(
+            ['curl', '-s', '-A', headers['User-Agent'], url],
+            capture_output=True, text=True, timeout=timeout[1]
+        )
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            return None
+    except subprocess.TimeoutExpired:
+        logging.error(f"请求超时: {url}")
+        return None
+    except Exception as e:
+        logging.error(f"发生错误: {e}")
+        return None
+
+def check_feed(blog_url):
     """
     检查博客的 RSS 或 Atom 订阅链接。
 
@@ -85,12 +106,9 @@ def check_feed(blog_url, session):
 
     for feed_type, path in possible_feeds:
         feed_url = f"{blog_url}{path}"
-        try:
-            response = session.get(feed_url, headers=headers, timeout=timeout)
-            if response.status_code == 200:
-                return [feed_type, feed_url]
-        except requests.RequestException:
-            continue
+        response = curl_request(feed_url)
+        if response:
+            return [feed_type, feed_url]
     logging.warning(f"无法找到 {blog_url} 的订阅链接")
     return ['none', blog_url]
 
@@ -186,7 +204,7 @@ def replace_non_domain(link, blog_url):
 
     return link
 
-def parse_feed(url, session, count=5, blog_url=None):
+def parse_feed(url, count=5, blog_url=None):
     """
     解析 Atom 或 RSS2 feed 并返回包含网站名称、作者、原链接和每篇文章详细内容的字典。
 
@@ -202,10 +220,11 @@ def parse_feed(url, session, count=5, blog_url=None):
     dict: 包含网站名称、作者、原链接和每篇文章详细内容的字典。
     """
     try:
-        response = session.get(url, headers=headers, timeout=timeout)
-        response.encoding = 'utf-8'
-        feed = feedparser.parse(response.text)
-        
+        response = curl_request(url)
+        if response:
+            response.encoding = 'utf-8'
+            feed = feedparser.parse(response)
+
         result = {
             'website_name': feed.feed.title if 'title' in feed.feed else '',
             'author': feed.feed.author if 'author' in feed.feed else '',
@@ -214,7 +233,6 @@ def parse_feed(url, session, count=5, blog_url=None):
         }
         
         for _ , entry in enumerate(feed.entries):
-            
             if 'published' in entry:
                 published = format_published_time(entry.published)
             elif 'updated' in entry:
@@ -251,7 +269,7 @@ def parse_feed(url, session, count=5, blog_url=None):
             'articles': []
         }
 
-def process_friend(friend, session, count, specific_RSS=[]):
+def process_friend(friend, count, specific_RSS=[]):
     """
     处理单个朋友的博客信息。
 
@@ -275,11 +293,11 @@ def process_friend(friend, session, count, specific_RSS=[]):
         feed_type = 'specific'
         logging.info(f"“{name}”的博客“ {blog_url} ”为特定RSS源“ {feed_url} ”")
     else:
-        feed_type, feed_url = check_feed(blog_url, session)
+        feed_type, feed_url = check_feed(blog_url)
         logging.info(f"“{name}”的博客“ {blog_url} ”的feed类型为“{feed_type}”, feed地址为“ {feed_url} ”")
 
     if feed_type != 'none':
-        feed_info = parse_feed(feed_url, session, count, blog_url)
+        feed_info = parse_feed(feed_url, count, blog_url)
         articles = [
             {
                 'title': article['title'],
@@ -319,10 +337,12 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     返回：
     dict: 包含统计数据和文章信息的字典。
     """
-    session = requests.Session()
-    
+    response = curl_request(json_url)
+    if not response:
+        logging.error(f"无法获取链接：{json_url}")
+        return None
+
     try:
-        response = session.get(json_url, headers=headers, timeout=timeout)
         friends_data = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
@@ -338,7 +358,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
-            executor.submit(process_friend, friend, session, count, specific_RSS): friend
+            executor.submit(process_friend, friend, count, specific_RSS): friend
             for friend in friends_data['friends']
         }
         
