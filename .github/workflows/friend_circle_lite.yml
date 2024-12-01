@@ -40,7 +40,10 @@ jobs:
         curl -v -A "Mozilla/5.0 (Windows; U; Windows NT 6.1; en-us) AppleWebKit/534.50 (KHTML, like Gecko) Version/5.1 Safari/534.50" https://blog.byer.top/atom.xml
     
     - name: Test script connection to blog.byer.top
-      run: python test.py
+      run: |
+        apt-get update
+        apt-get install -y curl
+        python test.py
 
     - name: Download last_articles.json artifact
       uses: dawidd6/action-download-artifact@v6
