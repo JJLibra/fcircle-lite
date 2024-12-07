@@ -123,7 +123,6 @@ def check_feed(blog_url, session):
     logging.warning(f"无法找到 {blog_url} 的订阅链接")
     return ['none', blog_url]
 
-
 def is_bad_link(link):
     """
     判断链接是否是IP地址+端口、localhost+端口或缺少域名的链接
@@ -211,8 +210,6 @@ def replace_non_domain(link, blog_url):
         link = 'https://' + link.split('://')[1]  # https
 
     return link
-
-
 
 def parse_feed(url, session, count=5, blog_url=None):
     """
@@ -364,7 +361,18 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
         return None, []
 
-    total_friends = len(friends_data['friends'])
+    # 检查 friends_data 的结构
+    if isinstance(friends_data, dict) and 'friends' in friends_data:
+        friends = friends_data['friends']
+        logging.info(f"发现 'friends' 键，包含 {len(friends)} 个友链")
+    elif isinstance(friends_data, list):
+        friends = friends_data
+        logging.info(f"JSON 数据是一个列表，包含 {len(friends)} 个友链")
+    else:
+        logging.error(f"JSON 格式错误：{json_url} 必须是字典包含 'friends' 键或直接是列表")
+        return None, []
+
+    total_friends = len(friends)
     active_friends = 0
     error_friends = 0
     total_articles = 0
@@ -372,11 +380,36 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     error_friends_info = []
 
     with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_friend = {
-            executor.submit(process_friend, [friend['name'], friend['url'], friend['avatar']], session, count, specific_RSS): friend
-            for friend in friends_data['friends']
-        }
-        
+        future_to_friend = {}
+        for friend in friends:
+            if isinstance(friend, dict):
+                try:
+                    name = friend['name']
+                    url = friend['url']
+                    avatar = friend['avatar']
+                except KeyError as e:
+                    logging.warning(f"友链缺少键：{e}，跳过该友链：{friend}")
+                    error_friends += 1
+                    error_friends_info.append(friend)
+                    continue
+                future = executor.submit(process_friend, [name, url, avatar], session, count, specific_RSS)
+                future_to_friend[future] = friend
+            elif isinstance(friend, list):
+                if len(friend) >= 3:
+                    name, url, avatar = friend[:3]
+                    future = executor.submit(process_friend, [name, url, avatar], session, count, specific_RSS)
+                    future_to_friend[future] = friend
+                else:
+                    logging.warning(f"友链列表长度不足3，跳过该友链：{friend}")
+                    error_friends += 1
+                    error_friends_info.append(friend)
+                    continue
+            else:
+                logging.warning(f"未知友链结构，跳过该友链：{friend}")
+                error_friends += 1
+                error_friends_info.append(friend)
+                continue
+
         for future in as_completed(future_to_friend):
             friend = future_to_friend[future]
             try:
@@ -387,11 +420,11 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
                     total_articles += len(result['articles'])
                 else:
                     error_friends += 1
-                    error_friends_info.append([friend['name'], friend['url'], friend['avatar']])
+                    error_friends_info.append(friend)
             except Exception as e:
-                logging.error(f"处理 {friend['name']} 时发生错误: {e}", exc_info=True)
+                logging.error(f"处理 {friend} 时发生错误: {e}", exc_info=True)
                 error_friends += 1
-                error_friends_info.append([friend['name'], friend['url'], friend['avatar']])
+                error_friends_info.append(friend)
 
     result = {
         'statistical_data': {
@@ -420,7 +453,7 @@ def sort_articles_by_time(data):
     """
     # 先确保每个元素存在时间
     for article in data['article_data']:
-        if article['created'] == '' or article['created'] == None:
+        if article['created'] == '' or article['created'] is None:
             article['created'] = '2024-01-01 00:00'
             # 输出警告信息
             logging.warning(f"文章 {article['title']} 未包含时间信息，已设置为默认时间 2024-01-01 00:00")
