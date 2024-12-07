@@ -1,4 +1,3 @@
-# 引入 check_feed 和 parse_feed 函数
 from friend_circle_lite.get_info import fetch_and_process_data, sort_articles_by_time, marge_data_from_json_url, marge_errors_from_json_url, deal_with_large_data
 from friend_circle_lite.get_conf import load_config
 from rss_subscribe.push_article_update import get_latest_articles_from_link, extract_emails_from_issues
@@ -76,7 +75,7 @@ if config["rss_subscribe"]["enable"]:
         url=your_blog_url,
         count=5,
         last_articles_path="./rss_subscribe/last_articles.json"
-        )
+    )
     logging.info("获取到的最新文章为：{latest_articles}".format(latest_articles=latest_articles))
     if latest_articles == None:
         logging.info("无未进行推送的新文章")

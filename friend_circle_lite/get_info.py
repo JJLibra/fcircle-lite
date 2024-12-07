@@ -6,6 +6,8 @@ import re
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
+import cloudscraper
+from urllib.parse import urljoin
 
 # 标准化的请求头
 headers = {
@@ -78,12 +80,17 @@ def check_feed(blog_url, session):
         ('index', '/index.xml') # 2024-07-25 添加 /index.xml内容的支持
     ]
 
+    # 尝试常见feed路径
     for feed_type, path in possible_feeds:
         feed_url = blog_url.rstrip('/') + path
         try:
             response = session.get(feed_url, headers=headers, timeout=timeout)
-            if response.status_code == 200 and ('<rss' in response.text or '<feed' in response.text):
-                return [feed_type, feed_url]
+            if response.status_code == 200:
+                content_type = response.headers.get('Content-Type', '').lower()
+                text = response.text.lower()
+                # 增加对 content-type 的判断
+                if '<rss' in text or '<feed' in text or 'application/rss+xml' in content_type or 'application/atom+xml' in content_type:
+                    return [feed_type, feed_url]
         except requests.RequestException:
             continue
 
@@ -94,12 +101,22 @@ def check_feed(blog_url, session):
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.find_all('link', rel='alternate')
             for link in links:
-                type_attr = link.get('type', '')
-                if 'rss' in type_attr or 'atom' in type_attr:
+                type_attr = link.get('type', '').lower()
+                # 增加对 application/rss+xml 和 application/atom+xml 的判断
+                if 'rss' in type_attr or 'atom' in type_attr or 'application/rss+xml' in type_attr or 'application/atom+xml' in type_attr:
                     href = link.get('href', '')
                     if not href.startswith('http'):
-                        href = blog_url.rstrip('/') + '/' + href.lstrip('/')
-                    return ['auto', href]
+                        href = urljoin(blog_url, href)
+                    # 对自动发现到的候选链接进行验证
+                    try:
+                        resp = session.get(href, headers=headers, timeout=timeout)
+                        if resp.status_code == 200:
+                            ctype = resp.headers.get('Content-Type', '').lower()
+                            rtext = resp.text.lower()
+                            if '<rss' in rtext or '<feed' in rtext or 'application/rss+xml' in ctype or 'application/atom+xml' in ctype:
+                                return ['auto', href]
+                    except requests.RequestException:
+                        continue
     except requests.RequestException:
         pass
 
@@ -195,7 +212,7 @@ def replace_non_domain(link, blog_url):
 
     return link
 
-import cloudscraper
+
 
 def parse_feed(url, session, count=5, blog_url=None):
     """
@@ -345,7 +362,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
         friends_data = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
-        return None
+        return None, []
 
     total_friends = len(friends_data['friends'])
     active_friends = 0
