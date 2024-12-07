@@ -5,6 +5,7 @@ import requests
 import re
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from bs4 import BeautifulSoup
 
 # 标准化的请求头
 headers = {
@@ -52,26 +53,21 @@ def format_published_time(time_str):
     shanghai_time = parsed_time.astimezone(timezone(timedelta(hours=8)))
     return shanghai_time.strftime('%Y-%m-%d %H:%M')
 
-
-
 def check_feed(blog_url, session):
     """
     检查博客的 RSS 或 Atom 订阅链接。
 
-    此函数接受一个博客地址，尝试在其后拼接 '/atom.xml', '/rss2.xml' 和 '/feed'，并检查这些链接是否可访问。
-    Atom 优先，如果都不能访问，则返回 ['none', 源地址]。
+    此函数接受一个博客地址，尝试在其后拼接常见的 RSS 路径，并检查这些链接是否可访问。
+    如果都不可访问，则尝试解析网页，自动发现 RSS 链接。
 
     参数：
     blog_url (str): 博客的基础 URL。
     session (requests.Session): 用于请求的会话对象。
 
     返回：
-    list: 包含类型和拼接后的链接的列表。如果 atom 链接可访问，则返回 ['atom', atom_url]；
-            如果 rss2 链接可访问，则返回 ['rss2', rss_url]；
-            如果 feed 链接可访问，则返回 ['feed', feed_url]；
-            如果都不可访问，则返回 ['none', blog_url]。
+    list: 包含类型和拼接后的链接的列表。如果找到有效的 RSS 链接，返回 ['feed_type', feed_url]；
+            否则返回 ['none', blog_url]。
     """
-    
     possible_feeds = [
         ('atom', '/atom.xml'),
         ('rss', '/rss.xml'), # 2024-07-26 添加 /rss.xml内容的支持
@@ -86,10 +82,27 @@ def check_feed(blog_url, session):
         feed_url = blog_url.rstrip('/') + path
         try:
             response = session.get(feed_url, headers=headers, timeout=timeout)
-            if response.status_code == 200:
+            if response.status_code == 200 and ('<rss' in response.text or '<feed' in response.text):
                 return [feed_type, feed_url]
         except requests.RequestException:
             continue
+
+    # 自动发现 RSS 链接
+    try:
+        response = session.get(blog_url, headers=headers, timeout=timeout)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = soup.find_all('link', rel='alternate')
+            for link in links:
+                type_attr = link.get('type', '')
+                if 'rss' in type_attr or 'atom' in type_attr:
+                    href = link.get('href', '')
+                    if not href.startswith('http'):
+                        href = blog_url.rstrip('/') + '/' + href.lstrip('/')
+                    return ['auto', href]
+    except requests.RequestException:
+        pass
+
     logging.warning(f"无法找到 {blog_url} 的订阅链接")
     return ['none', blog_url]
 
@@ -105,25 +118,22 @@ def is_bad_link(link):
     bool: 如果是IP地址+端口、localhost+端口或缺少域名，返回True；否则返回False
     """
     if '://' not in link:
-        link = 'http://' + link
+        return True  # 缺少协议的链接视为坏链接
 
     protocol_end = link.find('://')
     link = link[protocol_end + 3:]  # 去掉协议部分
 
-    if ':' in link:
-        host, port = link.split(':', 1)
+    if '/' in link:
+        host = link.split('/')[0]
     else:
         host = link
-        port = None
 
     if host in ['localhost', '::1', '127.0.0.1']:
         return True
 
     ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
     if re.match(ipv4_pattern, host):
-        octets = host.split('.')
-        if all(0 <= int(octet) <= 255 for octet in octets):
-            return True
+        return True
 
     # 检查IPv6地址（不完善）
     if host.startswith('[') and host.endswith(']'):
@@ -346,7 +356,7 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_friend = {
-            executor.submit(process_friend, friend, session, count, specific_RSS): friend
+            executor.submit(process_friend, [friend['name'], friend['url'], friend['avatar']], session, count, specific_RSS): friend
             for friend in friends_data['friends']
         }
         
@@ -360,11 +370,11 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
                     total_articles += len(result['articles'])
                 else:
                     error_friends += 1
-                    error_friends_info.append(friend)
+                    error_friends_info.append([friend['name'], friend['url'], friend['avatar']])
             except Exception as e:
-                logging.error(f"处理 {friend} 时发生错误: {e}", exc_info=True)
+                logging.error(f"处理 {friend['name']} 时发生错误: {e}", exc_info=True)
                 error_friends += 1
-                error_friends_info.append(friend)
+                error_friends_info.append([friend['name'], friend['url'], friend['avatar']])
 
     result = {
         'statistical_data': {
