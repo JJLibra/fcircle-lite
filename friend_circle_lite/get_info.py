@@ -5,9 +5,6 @@ import requests
 import re
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from bs4 import BeautifulSoup
-import cloudscraper
-from urllib.parse import urljoin
 
 # 标准化的请求头
 headers = {
@@ -55,21 +52,26 @@ def format_published_time(time_str):
     shanghai_time = parsed_time.astimezone(timezone(timedelta(hours=8)))
     return shanghai_time.strftime('%Y-%m-%d %H:%M')
 
+
+
 def check_feed(blog_url, session):
     """
     检查博客的 RSS 或 Atom 订阅链接。
 
-    此函数接受一个博客地址，尝试在其后拼接常见的 RSS 路径，并检查这些链接是否可访问。
-    如果都不可访问，则尝试解析网页，自动发现 RSS 链接。
+    此函数接受一个博客地址，尝试在其后拼接 '/atom.xml', '/rss2.xml' 和 '/feed'，并检查这些链接是否可访问。
+    Atom 优先，如果都不能访问，则返回 ['none', 源地址]。
 
     参数：
     blog_url (str): 博客的基础 URL。
     session (requests.Session): 用于请求的会话对象。
 
     返回：
-    list: 包含类型和拼接后的链接的列表。如果找到有效的 RSS 链接，返回 ['feed_type', feed_url]；
-            否则返回 ['none', blog_url]。
+    list: 包含类型和拼接后的链接的列表。如果 atom 链接可访问，则返回 ['atom', atom_url]；
+            如果 rss2 链接可访问，则返回 ['rss2', rss_url]；
+            如果 feed 链接可访问，则返回 ['feed', feed_url]；
+            如果都不可访问，则返回 ['none', blog_url]。
     """
+    
     possible_feeds = [
         ('atom', '/atom.xml'),
         ('rss', '/rss.xml'), # 2024-07-26 添加 /rss.xml内容的支持
@@ -80,48 +82,17 @@ def check_feed(blog_url, session):
         ('index', '/index.xml') # 2024-07-25 添加 /index.xml内容的支持
     ]
 
-    # 尝试常见feed路径
     for feed_type, path in possible_feeds:
         feed_url = blog_url.rstrip('/') + path
         try:
             response = session.get(feed_url, headers=headers, timeout=timeout)
             if response.status_code == 200:
-                content_type = response.headers.get('Content-Type', '').lower()
-                text = response.text.lower()
-                # 增加对 content-type 的判断
-                if '<rss' in text or '<feed' in text or 'application/rss+xml' in content_type or 'application/atom+xml' in content_type:
-                    return [feed_type, feed_url]
+                return [feed_type, feed_url]
         except requests.RequestException:
             continue
-
-    # 自动发现 RSS 链接
-    try:
-        response = session.get(blog_url, headers=headers, timeout=timeout)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            links = soup.find_all('link', rel='alternate')
-            for link in links:
-                type_attr = link.get('type', '').lower()
-                # 增加对 application/rss+xml 和 application/atom+xml 的判断
-                if 'rss' in type_attr or 'atom' in type_attr or 'application/rss+xml' in type_attr or 'application/atom+xml' in type_attr:
-                    href = link.get('href', '')
-                    if not href.startswith('http'):
-                        href = urljoin(blog_url, href)
-                    # 对自动发现到的候选链接进行验证
-                    try:
-                        resp = session.get(href, headers=headers, timeout=timeout)
-                        if resp.status_code == 200:
-                            ctype = resp.headers.get('Content-Type', '').lower()
-                            rtext = resp.text.lower()
-                            if '<rss' in rtext or '<feed' in rtext or 'application/rss+xml' in ctype or 'application/atom+xml' in ctype:
-                                return ['auto', href]
-                    except requests.RequestException:
-                        continue
-    except requests.RequestException:
-        pass
-
     logging.warning(f"无法找到 {blog_url} 的订阅链接")
     return ['none', blog_url]
+
 
 def is_bad_link(link):
     """
@@ -134,22 +105,25 @@ def is_bad_link(link):
     bool: 如果是IP地址+端口、localhost+端口或缺少域名，返回True；否则返回False
     """
     if '://' not in link:
-        return True  # 缺少协议的链接视为坏链接
+        link = 'http://' + link
 
     protocol_end = link.find('://')
     link = link[protocol_end + 3:]  # 去掉协议部分
 
-    if '/' in link:
-        host = link.split('/')[0]
+    if ':' in link:
+        host, port = link.split(':', 1)
     else:
         host = link
+        port = None
 
     if host in ['localhost', '::1', '127.0.0.1']:
         return True
 
     ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
     if re.match(ipv4_pattern, host):
-        return True
+        octets = host.split('.')
+        if all(0 <= int(octet) <= 255 for octet in octets):
+            return True
 
     # 检查IPv6地址（不完善）
     if host.startswith('[') and host.endswith(']'):
@@ -210,6 +184,8 @@ def replace_non_domain(link, blog_url):
         link = 'https://' + link.split('://')[1]  # https
 
     return link
+
+import cloudscraper
 
 def parse_feed(url, session, count=5, blog_url=None):
     """
@@ -359,20 +335,9 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
         friends_data = response.json()
     except Exception as e:
         logging.error(f"无法获取链接：{json_url} ：{e}", exc_info=True)
-        return None, []
+        return None
 
-    # 检查 friends_data 的结构
-    if isinstance(friends_data, dict) and 'friends' in friends_data:
-        friends = friends_data['friends']
-        logging.info(f"发现 'friends' 键，包含 {len(friends)} 个友链")
-    elif isinstance(friends_data, list):
-        friends = friends_data
-        logging.info(f"JSON 数据是一个列表，包含 {len(friends)} 个友链")
-    else:
-        logging.error(f"JSON 格式错误：{json_url} 必须是字典包含 'friends' 键或直接是列表")
-        return None, []
-
-    total_friends = len(friends)
+    total_friends = len(friends_data['friends'])
     active_friends = 0
     error_friends = 0
     total_articles = 0
@@ -380,36 +345,11 @@ def fetch_and_process_data(json_url, specific_RSS=[], count=5):
     error_friends_info = []
 
     with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_friend = {}
-        for friend in friends:
-            if isinstance(friend, dict):
-                try:
-                    name = friend['name']
-                    url = friend['url']
-                    avatar = friend['avatar']
-                except KeyError as e:
-                    logging.warning(f"友链缺少键：{e}，跳过该友链：{friend}")
-                    error_friends += 1
-                    error_friends_info.append(friend)
-                    continue
-                future = executor.submit(process_friend, [name, url, avatar], session, count, specific_RSS)
-                future_to_friend[future] = friend
-            elif isinstance(friend, list):
-                if len(friend) >= 3:
-                    name, url, avatar = friend[:3]
-                    future = executor.submit(process_friend, [name, url, avatar], session, count, specific_RSS)
-                    future_to_friend[future] = friend
-                else:
-                    logging.warning(f"友链列表长度不足3，跳过该友链：{friend}")
-                    error_friends += 1
-                    error_friends_info.append(friend)
-                    continue
-            else:
-                logging.warning(f"未知友链结构，跳过该友链：{friend}")
-                error_friends += 1
-                error_friends_info.append(friend)
-                continue
-
+        future_to_friend = {
+            executor.submit(process_friend, friend, session, count, specific_RSS): friend
+            for friend in friends_data['friends']
+        }
+        
         for future in as_completed(future_to_friend):
             friend = future_to_friend[future]
             try:
@@ -453,7 +393,7 @@ def sort_articles_by_time(data):
     """
     # 先确保每个元素存在时间
     for article in data['article_data']:
-        if article['created'] == '' or article['created'] is None:
+        if article['created'] == '' or article['created'] == None:
             article['created'] = '2024-01-01 00:00'
             # 输出警告信息
             logging.warning(f"文章 {article['title']} 未包含时间信息，已设置为默认时间 2024-01-01 00:00")
